@@ -1,0 +1,14 @@
+[package]
+name = "pinocchio_program"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pinocchio = "0.7.1"
+pinocchio-system = "0.2.1"
+borsh = "1.5.5"
+borsh-derive = "1.5.5"
+
+[lib]
+name = "pinocchio_program"
+crate-type = ["cdylib", "lib"]

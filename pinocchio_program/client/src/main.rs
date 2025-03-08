@@ -1,0 +1,182 @@
+use anyhow::Result;
+use borsh::BorshSerialize;
+use borsh_derive::BorshSerialize as BorshSerializeDerive;
+use solana_client::rpc_client::RpcClient;
+use solana_program::{
+    instruction::{AccountMeta, Instruction},
+    pubkey::Pubkey,
+    system_program,
+};
+use solana_sdk::{
+    commitment_config::CommitmentConfig,
+    native_token::LAMPORTS_PER_SOL,
+    signature::{Keypair, Signer},
+    transaction::Transaction,
+};
+use std::{str::FromStr, thread, time::Duration};
+
+// Include the test module
+#[cfg(test)]
+mod test;
+
+const PROGRAM_ID: &str = "G7isKoAvjaMXi7CSDZTspXvUaD2dfVNwZyrWYTe6nfoj";
+const RPC_URL: &str = "http://127.0.0.1:8899";
+
+#[derive(Debug, BorshSerializeDerive)]
+pub enum ProgramInstruction {
+    Deposit { amount: u64 },
+    Withdraw { amount: u64 },
+}
+
+impl ProgramInstruction {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        BorshSerialize::serialize(self, &mut data).unwrap();
+        data
+    }
+}
+// Helper functions for finding PDAs
+fn find_user_account_address(user_pubkey: &Pubkey, program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[user_pubkey.as_ref()], program_id)
+}
+
+fn find_vault_address(user_pubkey: &Pubkey, program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"vault", user_pubkey.as_ref()], program_id)
+}
+
+fn main() -> Result<()> {
+    // Create connection
+    let commitment_config = CommitmentConfig::confirmed();
+    let connection = RpcClient::new_with_commitment(RPC_URL.to_string(), commitment_config);
+
+    // Setup payer and request airdrop
+    let payer = Keypair::new();
+    let airdrop_signature = connection.request_airdrop(&payer.pubkey(), LAMPORTS_PER_SOL * 2)?;
+    connection.confirm_transaction(&airdrop_signature)?;
+    thread::sleep(Duration::from_secs(1));
+
+    // Get the program ID from the PROGRAM_ID constant
+    let program_id = Pubkey::from_str(PROGRAM_ID)?;
+
+    // Get the user and vault PDAs
+    let user_pubkey = payer.pubkey();
+    let (user_account_pda, _) = find_user_account_address(&user_pubkey, &program_id);
+    let (vault_pda, _) = find_vault_address(&user_pubkey, &program_id);
+
+    // Get initial balances
+    let user_initial_balance = connection.get_balance(&user_pubkey)?;
+    let vault_initial_balance = match connection.get_account(&vault_pda) {
+        Ok(account) => account.lamports,
+        Err(_) => 0,
+    };
+
+    println!("User data PDA: {}", user_account_pda);
+    println!("Vault PDA: {}", vault_pda);
+    println!(
+        "User initial balance: {} SOL",
+        user_initial_balance as f64 / LAMPORTS_PER_SOL as f64
+    );
+    println!(
+        "Vault initial balance: {} SOL",
+        vault_initial_balance as f64 / LAMPORTS_PER_SOL as f64
+    );
+
+    // Amount to deposit
+    let deposit_amount = LAMPORTS_PER_SOL / 10; // 0.1 SOL
+
+    // Create deposit instruction
+    let instruction_data = ProgramInstruction::Deposit {
+        amount: deposit_amount,
+    }
+    .serialize();
+
+    let deposit_instruction = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(user_pubkey, true), // User (signer, writable)
+            AccountMeta::new(user_account_pda, false), // User account PDA (writable)
+            AccountMeta::new(vault_pda, false),  // Vault PDA (writable)
+            AccountMeta::new_readonly(system_program::id(), false), // System program
+        ],
+        data: instruction_data,
+    };
+
+    // Send deposit transaction
+    let recent_blockhash = connection.get_latest_blockhash()?;
+    let deposit_transaction = Transaction::new_signed_with_payer(
+        &[deposit_instruction],
+        Some(&user_pubkey),
+        &[&payer],
+        recent_blockhash,
+    );
+
+    let deposit_signature = connection.send_and_confirm_transaction(&deposit_transaction)?;
+    println!("\nDeposit transaction signature: {}", deposit_signature);
+
+    // Get balances after deposit
+    thread::sleep(Duration::from_secs(1));
+    let user_after_deposit = connection.get_balance(&user_pubkey)?;
+    let vault_account = connection.get_account(&vault_pda)?;
+    let vault_after_deposit = vault_account.lamports;
+
+    println!(
+        "User balance after deposit: {} SOL",
+        user_after_deposit as f64 / LAMPORTS_PER_SOL as f64
+    );
+    println!(
+        "Vault balance after deposit: {} SOL",
+        vault_after_deposit as f64 / LAMPORTS_PER_SOL as f64
+    );
+
+    // Wait a bit before withdrawing
+    thread::sleep(Duration::from_secs(2));
+
+    // Now withdraw half of what was deposited
+    let withdraw_amount = deposit_amount / 2;
+
+    // Create withdraw instruction
+    let instruction_data = ProgramInstruction::Withdraw {
+        amount: withdraw_amount,
+    }
+    .serialize();
+
+    let withdraw_instruction = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(user_pubkey, true), // User (signer, writable)
+            AccountMeta::new(user_account_pda, false), // User account PDA (readable)
+            AccountMeta::new(vault_pda, false),  // Vault PDA (writable)
+            AccountMeta::new_readonly(system_program::id(), false), // System program
+        ],
+        data: instruction_data,
+    };
+
+    // Send withdraw transaction
+    let recent_blockhash = connection.get_latest_blockhash()?;
+    let withdraw_transaction = Transaction::new_signed_with_payer(
+        &[withdraw_instruction],
+        Some(&user_pubkey),
+        &[&payer],
+        recent_blockhash,
+    );
+
+    let withdraw_signature = connection.send_and_confirm_transaction(&withdraw_transaction)?;
+    println!("\nWithdraw transaction signature: {}", withdraw_signature);
+
+    // Get balances after withdrawal
+    thread::sleep(Duration::from_secs(1));
+    let user_after_withdraw = connection.get_balance(&user_pubkey)?;
+    let vault_account = connection.get_account(&vault_pda)?;
+    let vault_after_withdraw = vault_account.lamports;
+
+    println!(
+        "User balance after withdrawal: {} SOL",
+        user_after_withdraw as f64 / LAMPORTS_PER_SOL as f64
+    );
+    println!(
+        "Vault balance after withdrawal: {} SOL",
+        vault_after_withdraw as f64 / LAMPORTS_PER_SOL as f64
+    );
+
+    Ok(())
+}
