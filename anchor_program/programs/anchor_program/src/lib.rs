@@ -72,7 +72,7 @@ pub struct Deposit<'info> {
     #[account(
         init_if_needed,
         payer = user,
-        space = 8 + UserAccount::SPACE,
+        space = 8 + UserAccount::INIT_SPACE,
         seeds = [user.key().as_ref()],
         bump
     )]
@@ -110,15 +110,12 @@ pub struct Withdraw<'info> {
 }
 
 #[account]
+#[derive(InitSpace)]
 pub struct UserAccount {
-    pub user: Pubkey,
-    pub user_bump: u8,
-    pub vault_bump: u8,
-    pub is_initialized: bool,
-}
-
-impl UserAccount {
-    pub const SPACE: usize = 32 + 1 + 1 + 1;
+    pub user: Pubkey,         // 32 bytes
+    pub user_bump: u8,        // 1 byte
+    pub vault_bump: u8,       // 1 byte
+    pub is_initialized: bool, // 1 byte
 }
 
 #[error_code]
